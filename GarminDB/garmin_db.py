@@ -7,8 +7,8 @@ __license__ = "GPL"
 import os
 import datetime
 import logging
+import re
 from sqlalchemy import Column, Integer, Date, DateTime, Time, Float, String, Enum, ForeignKey, func, PrimaryKeyConstraint
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.ext.hybrid import hybrid_property
 
 import Fit
@@ -19,17 +19,15 @@ import utilities
 logger = logging.getLogger(__name__)
 
 
-class GarminDB(utilities.DB):
-    """Object representing a database for storing health data from a Garmin device."""
+class GarminDbError(Exception):
+    """Base exception for GarminDb exceptions"""
 
-    Base = declarative_base()
 
-    db_tables = []
-    db_name = 'garmin'
-    db_version = 13
+class GarminDbError_IdNotFound(GarminDbError):
+    """File id not found"""
 
-    class _DbVersion(Base, utilities.DbVersionObject):
-        """Stores version information for this databse and it's tables."""
+
+GarminDB = utilities.DB.create('garmin', 14, "Database for storing health data from a Garmin device.")
 
 
 class Attributes(GarminDB.Base, utilities.KeyValueObject):
@@ -51,7 +49,7 @@ class Attributes(GarminDB.Base, utilities.KeyValueObject):
         return (cls.measurements_type(db) == Fit.field_enums.DisplayMeasure.metric)
 
 
-class Device(GarminDB.Base, utilities.DBObject):
+class Device(GarminDB.Base, utilities.DbObject):
     """Class representing a Garmin device."""
 
     __tablename__ = 'devices'
@@ -80,7 +78,7 @@ class Device(GarminDB.Base, utilities.DBObject):
         return '%s%06d' % (serial_number, device_type.value)
 
 
-class DeviceInfo(GarminDB.Base, utilities.DBObject):
+class DeviceInfo(GarminDB.Base, utilities.DbObject):
     """Class representing a Garmin device info message from a FIT file."""
 
     __tablename__ = 'device_info'
@@ -123,7 +121,7 @@ class DeviceInfo(GarminDB.Base, utilities.DBObject):
         cls.create_join_view(db, cls._get_default_view_name(), cols, Device, order_by=cls.timestamp.desc())
 
 
-class File(GarminDB.Base, utilities.DBObject):
+class File(GarminDB.Base, utilities.DbObject):
     """Class representing a data file."""
 
     __tablename__ = 'files'
@@ -164,17 +162,20 @@ class File(GarminDB.Base, utilities.DBObject):
     @classmethod
     def name_and_id_from_path(cls, pathname):
         """Return the name and id of a file given it's pathname."""
-        name = os.path.basename(pathname)
-        id = name.split('.')[0]
-        return (id, name)
+        filename = os.path.basename(pathname)
+        found = re.match(r"(\d+).*\.\S+", filename)
+        if found:
+            return (found.group(1), filename)
+        raise GarminDbError_IdNotFound()
 
     @classmethod
     def id_from_path(cls, pathname):
         """Return the id of a file given it's pathname."""
-        return os.path.basename(pathname).split('.')[0]
+        id, _ = cls.name_and_id_from_path(pathname)
+        return id
 
 
-class Weight(GarminDB.Base, utilities.DBObject):
+class Weight(GarminDB.Base, utilities.DbObject):
     """Class representing a weight entry."""
 
     __tablename__ = 'weight'
@@ -188,15 +189,14 @@ class Weight(GarminDB.Base, utilities.DBObject):
     @classmethod
     def get_stats(cls, session, start_ts, end_ts):
         """Return a dictionary of aggregate statistics for the given time period."""
-        stats = {
+        return {
             'weight_avg': cls.s_get_col_avg(session, cls.weight, start_ts, end_ts, True),
             'weight_min': cls.s_get_col_min(session, cls.weight, start_ts, end_ts, True),
-            'weight_max': cls.s_get_col_max(session, cls.weight, start_ts, end_ts),
+            'weight_max': cls.s_get_col_max(session, cls.weight, start_ts, end_ts)
         }
-        return stats
 
 
-class Stress(GarminDB.Base, utilities.DBObject):
+class Stress(GarminDB.Base, utilities.DbObject):
     """Class representing a stress reading."""
 
     __tablename__ = 'stress'
@@ -210,13 +210,12 @@ class Stress(GarminDB.Base, utilities.DBObject):
     @classmethod
     def get_stats(cls, session, start_ts, end_ts):
         """Return a dictionary of aggregate statistics for the given time period."""
-        stats = {
+        return {
             'stress_avg': cls.s_get_col_avg(session, cls.stress, start_ts, end_ts, True),
         }
-        return stats
 
 
-class Sleep(GarminDB.Base, utilities.DBObject):
+class Sleep(GarminDB.Base, utilities.DbObject):
     """Class representing a sleep session."""
 
     __tablename__ = 'sleep'
@@ -246,7 +245,7 @@ class Sleep(GarminDB.Base, utilities.DBObject):
         }
 
 
-class SleepEvents(GarminDB.Base, utilities.DBObject):
+class SleepEvents(GarminDB.Base, utilities.DbObject):
     """Table that stores events recorded druing sleep."""
 
     __tablename__ = 'sleep_events'
@@ -268,13 +267,14 @@ class SleepEvents(GarminDB.Base, utilities.DBObject):
             return values[0][0]
 
 
-class RestingHeartRate(GarminDB.Base, utilities.DBObject):
+class RestingHeartRate(GarminDB.Base, utilities.DbObject):
     """Class representing a daily resting heart rate reading."""
 
     __tablename__ = 'resting_hr'
 
     db = GarminDB
     table_version = 1
+    _col_units = {'resting_heart_rate': 'bpm'}
 
     day = Column(Date, primary_key=True)
     resting_heart_rate = Column(Float)
@@ -282,21 +282,21 @@ class RestingHeartRate(GarminDB.Base, utilities.DBObject):
     @classmethod
     def get_stats(cls, session, start_ts, end_ts):
         """Return a dictionary of aggregate statistics for the given time period."""
-        stats = {
+        return {
             'rhr_avg': cls.s_get_col_avg(session, cls.resting_heart_rate, start_ts, end_ts, ignore_le_zero=True),
             'rhr_min': cls.s_get_col_min(session, cls.resting_heart_rate, start_ts, end_ts, ignore_le_zero=True),
             'rhr_max': cls.s_get_col_max(session, cls.resting_heart_rate, start_ts, end_ts),
         }
-        return stats
 
 
-class DailySummary(GarminDB.Base, utilities.DBObject):
+class DailySummary(GarminDB.Base, utilities.DbObject):
     """Class representing a Garmin daily summary."""
 
     __tablename__ = 'daily_summary'
 
     db = GarminDB
     table_version = 4
+    _col_units = {'hr_min': 'bpm', 'hr_max': 'bpm', 'rhr': 'bpm'}
 
     day = Column(Date, primary_key=True)
     hr_min = Column(Integer)

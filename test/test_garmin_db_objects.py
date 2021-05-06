@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 
 import GarminDB
 import Fit
-import garmin_db_config_manager as GarminDBConfigManager
+from garmin_db_config_manager import GarminDBConfigManager
 
 
 root_logger = logging.getLogger()
@@ -48,6 +48,14 @@ class TestGarminDbObjects(unittest.TestCase):
     def test_file_good(self):
         file_id = 123345678
         filename = '%d.fit' % file_id
+        filename_with_path = '/test/directory/' + filename
+        file_type = GarminDB.File.FileType.fit_goals
+        file_serial_number = 987654321
+        self.check_file_obj(filename_with_path, file_type, file_serial_number)
+
+    def test_file_good_with_activity_name(self):
+        file_id = 123345678
+        filename = '%d_ACTIVITY.fit' % file_id
         filename_with_path = '/test/directory/' + filename
         file_type = GarminDB.File.FileType.fit_goals
         file_serial_number = 987654321
